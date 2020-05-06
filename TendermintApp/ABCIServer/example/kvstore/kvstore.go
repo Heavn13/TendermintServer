@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	dbm "github.com/tendermint/tm-db"
 
@@ -88,20 +89,37 @@ func (app *Application) Info(req types.RequestInfo) (resInfo types.ResponseInfo)
 
 // tx is either "key=value" or just arbitrary bytes
 func (app *Application) DeliverTx(req types.RequestDeliverTx) types.ResponseDeliverTx {
-	var key, value []byte
+	var method, key, value []byte
 	parts := bytes.Split(req.Tx, []byte("="))
-	if len(parts) == 2 {
-		key, value = parts[0], parts[1]
+	if len(parts) == 3 {
+		method, key, value = parts[0], parts[1], parts[2]
 	} else {
-		key, value = req.Tx, req.Tx
+		method, key, value = req.Tx, req.Tx, req.Tx
 	}
 
+    lib.Log.Notice(string(method))
 	lib.Log.Notice(string(key))
     lib.Log.Notice(string(value))
 
-    // 此处修改 app.state.db.Set(prefixKey(key), value)
-	app.state.db.Set(key, value)
-	app.state.Size++
+    switch string(method) {
+        case "add":
+            // 此处修改 app.state.db.Set(prefixKey(key), value)
+            app.state.db.Set(key, value)
+            app.state.Size++
+        case "modify":
+            exist, e := app.state.db.Has(key)
+            lib.Log.Notice(exist)
+            if e == nil {
+                app.state.db.Delete(key)
+                app.state.db.Set(key, value)
+            }
+        case "delete":
+            exist, e := app.state.db.Has(key)
+            lib.Log.Notice(exist)
+            if e == nil {
+                app.state.db.Delete(key)
+            }
+    }
 
 	events := []types.Event{
 		{
@@ -138,51 +156,66 @@ func (app *Application) Commit() types.ResponseCommit {
 // Returns an associated value or nil if missing.
 func (app *Application) Query(reqQuery types.RequestQuery) (resQuery types.ResponseQuery) {
     lib.Log.Notice(reqQuery)
-	if reqQuery.Prove {
+// 	if reqQuery.Prove {
 // 	    lib.Log.Notice(string(reqQuery.Data))
 	    // 此处修改 value, err := app.state.db.Get(prefixKey(reqQuery.Data))
-		value, err := app.state.db.Get(reqQuery.Data)
+// 		value, err := app.state.db.Get(reqQuery.Data)
+//
+// 		if err != nil {
+// 			panic(err)
+// 		}
+// 		if value == nil {
+// 			resQuery.Log = "does not exist"
+// 		} else {
+// 			resQuery.Log = "exists"
+// 		}
+// 		resQuery.Index = -1 // TODO make Proof return index
+// 		resQuery.Key = reqQuery.Data
+// 		resQuery.Value = value
+// 		resQuery.Height = app.state.Height
+//
+// 		return resQuery
+// 	}
+    lib.Log.Notice(string(reqQuery.Path))
+    if reqQuery.Path == "" {
+        resQuery.Key = reqQuery.Data
+        // 此处修改 value, err := app.state.db.Get(prefixKey(reqQuery.Data))
+        value, err := app.state.db.Get(reqQuery.Data)
 
-		if err != nil {
-			panic(err)
-		}
-		if value == nil {
-			resQuery.Log = "does not exist"
-		} else {
-			resQuery.Log = "exists"
-		}
-		resQuery.Index = -1 // TODO make Proof return index
-		resQuery.Key = reqQuery.Data
-		resQuery.Value = value
-		resQuery.Height = app.state.Height
+        if err != nil {
+            panic(err)
+        }
+        if value == nil {
+            resQuery.Log = "does not exist"
+        } else {
+            resQuery.Log = "exists"
+        }
+        resQuery.Value = value
+        resQuery.Height = app.state.Height
 
-		return resQuery
-	}
 
-	resQuery.Key = reqQuery.Data
-	// 此处修改 value, err := app.state.db.Get(prefixKey(reqQuery.Data))
-	value, err := app.state.db.Get(reqQuery.Data)
-	result := app.state.db.Stats()
-    lib.Log.Notice(result)
-    itr, e := app.state.db.Iterator(nil, nil)
-    for ; itr.Valid(); itr.Next() {
-        key := itr.Key()
-	    value := itr.Value()
-	    lib.Log.Notice(string(key))
-	    lib.Log.Notice(string(value))
+    }else{
+        // 迭代器
+        itr, e := app.state.db.Iterator(nil, nil)
+        // 查询kv获取对应数据
+        var build strings.Builder
+        build.WriteString("[")
+        for ; itr.Valid(); itr.Next() {
+            key := itr.Key()
+            value := itr.Value()
+            if strings.Index(string(key), reqQuery.Path) != -1 && strings.Index(string(value), string(reqQuery.Data)) != -1 {
+                build.WriteString(string(value))
+                build.WriteString(",")
+            }
+        }
+        result := build.String()
+        result = strings.TrimRight(result, ",")
+        result = result + "]"
+        lib.Log.Notice(result)
+        lib.Log.Notice(e)
+        resQuery.Key = reqQuery.Data
+        resQuery.Value = []byte(result)
     }
-    lib.Log.Notice(e)
 
-	if err != nil {
-		panic(err)
-	}
-	if value == nil {
-		resQuery.Log = "does not exist"
-	} else {
-		resQuery.Log = "exists"
-	}
-	resQuery.Value = value
-	resQuery.Height = app.state.Height
-
-	return resQuery
+    return resQuery
 }
